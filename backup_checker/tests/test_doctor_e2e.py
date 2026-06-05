@@ -86,7 +86,7 @@ def cleanup_test_directory(temp_dir):
 
 
 def run_test(test_name, cmd, cwd, expected_code, check_stdout=None,
-             check_stderr=None, description=""):
+             check_stderr=None, not_check_stdout=None, description=""):
     """Run a test case with assertions."""
     print("=" * 60)
     print(f"TEST: {test_name}")
@@ -124,6 +124,13 @@ def run_test(test_name, cmd, cwd, expected_code, check_stdout=None,
             if found != should_contain:
                 action = "contain" if should_contain else "NOT contain"
                 print(f"FAIL: Expected stdout to {action} '{text}'")
+                sys.exit(1)
+
+    if not_check_stdout:
+        for check in not_check_stdout:
+            found = check.lower() in result.stdout.lower()
+            if found:
+                print(f"FAIL: Expected stdout to NOT contain '{check}' but it does")
                 sys.exit(1)
 
     if check_stderr:
@@ -251,9 +258,35 @@ def main():
             "backup-checker doctor -c bad.yaml",
             cwd=temp_dir,
             expected_code=EXIT_CONFIG_ERROR,
-            check_stderr=["Invalid YAML format"],
+            check_stdout=["Invalid YAML format", "[ERR] config.yaml"],
+            check_stderr=[],
             description="Exit code 2 for bad YAML"
         )
+
+        run_test(
+            "Bad YAML config with --json",
+            "backup-checker doctor -c bad.yaml --json",
+            cwd=temp_dir,
+            expected_code=EXIT_CONFIG_ERROR,
+            check_stdout=["{", "}", '"exit_code": 2', '"error_category": "invalid_yaml"'],
+            not_check_stdout=["[ERR]"],
+            check_stderr=[],
+            description="JSON output for bad YAML, no [ERR] text"
+        )
+        result = subprocess.run(
+            ["backup-checker", "doctor", "-c", "bad.yaml", "--json"],
+            cwd=temp_dir, capture_output=True, text=True
+        )
+        try:
+            json_data = json.loads(result.stdout)
+            assert json_data["exit_code"] == EXIT_CONFIG_ERROR
+            assert json_data["error_category"] == "invalid_yaml"
+            assert json_data["summary"]["error"] >= 1
+            assert "Invalid YAML format" in json_data["checks"][0]["message"]
+            print("VERIFIED: Bad YAML --json output is valid JSON with correct fields")
+        except json.JSONDecodeError:
+            pytest.fail(f"Bad YAML --json output is not valid JSON: {result.stdout}")
+        print()
 
         dup_config = temp_dir / "dup.yaml"
         dup_config.write_text(yaml.dump({
@@ -273,9 +306,36 @@ def main():
             "backup-checker doctor -c dup.yaml",
             cwd=temp_dir,
             expected_code=EXIT_DOCTOR_DUPLICATE_TARGET,
-            check_stderr=["Duplicate target paths found"],
+            check_stdout=["Duplicate target paths found", "[ERR] config.load"],
+            check_stderr=[],
             description="Exit code 18 for duplicate targets"
         )
+
+        run_test(
+            "Duplicate target config with --json",
+            "backup-checker doctor -c dup.yaml --json",
+            cwd=temp_dir,
+            expected_code=EXIT_DOCTOR_DUPLICATE_TARGET,
+            check_stdout=["{", "}", '"exit_code": 18', '"error_category": "duplicate_target"'],
+            not_check_stdout=["[ERR]"],
+            check_stderr=[],
+            description="JSON output for duplicate target, no [ERR] text"
+        )
+        result = subprocess.run(
+            ["backup-checker", "doctor", "-c", "dup.yaml", "--json"],
+            cwd=temp_dir, capture_output=True, text=True
+        )
+        try:
+            json_data = json.loads(result.stdout)
+            assert json_data["exit_code"] == EXIT_DOCTOR_DUPLICATE_TARGET
+            assert json_data["error_category"] == "duplicate_target"
+            assert json_data["summary"]["error"] >= 1
+            assert "Duplicate target paths found" in json_data["checks"][0]["message"]
+            assert "documents/" in json_data["checks"][0]["details"]["duplicates"]
+            print("VERIFIED: Duplicate target --json output is valid JSON with correct fields")
+        except json.JSONDecodeError:
+            pytest.fail(f"Duplicate target --json output is not valid JSON: {result.stdout}")
+        print()
 
         unknown_algo_config = temp_dir / "unknown-algo.yaml"
         unknown_algo_config.write_text(yaml.dump({
@@ -292,13 +352,41 @@ def main():
             "backup-checker doctor -c unknown-algo.yaml",
             cwd=temp_dir,
             expected_code=EXIT_DOCTOR_UNKNOWN_ALGORITHM,
-            check_stderr=[
+            check_stdout=[
                 "Unsupported hash algorithm",
                 "unknown123",
                 "md5", "sha1", "sha256", "sha512",
+                "[ERR] config.hash_algorithm",
             ],
+            check_stderr=[],
             description="Exit code 17 for unknown hash algorithm"
         )
+
+        run_test(
+            "Unknown hash algorithm with --json",
+            "backup-checker doctor -c unknown-algo.yaml --json",
+            cwd=temp_dir,
+            expected_code=EXIT_DOCTOR_UNKNOWN_ALGORITHM,
+            check_stdout=["{", "}", '"exit_code": 17', '"error_category": "unknown_algorithm"'],
+            not_check_stdout=["[ERR]"],
+            check_stderr=[],
+            description="JSON output for unknown algorithm, no [ERR] text"
+        )
+        result = subprocess.run(
+            ["backup-checker", "doctor", "-c", "unknown-algo.yaml", "--json"],
+            cwd=temp_dir, capture_output=True, text=True
+        )
+        try:
+            json_data = json.loads(result.stdout)
+            assert json_data["exit_code"] == EXIT_DOCTOR_UNKNOWN_ALGORITHM
+            assert json_data["error_category"] == "unknown_algorithm"
+            assert json_data["summary"]["error"] >= 1
+            assert "Unsupported hash algorithm" in json_data["checks"][0]["message"]
+            assert "unknown123" in json_data["checks"][0]["message"]
+            print("VERIFIED: Unknown algorithm --json output is valid JSON with correct fields")
+        except json.JSONDecodeError:
+            pytest.fail(f"Unknown algorithm --json output is not valid JSON: {result.stdout}")
+        print()
 
         missing_source_config = temp_dir / "missing-source.yaml"
         missing_source_config.write_text(yaml.dump({
@@ -497,20 +585,20 @@ def main():
         print("=" * 70)
         print()
         print("SUMMARY OF VERIFICATIONS:")
-        print("  ✓ Normal doctor check works with warnings")
-        print("  ✓ --json output is valid, stable JSON with correct fields")
-        print("  ✓ --fix creates missing history and profile directories")
-        print("  ✓ Bad YAML returns exit code 2 with clear error")
-        print("  ✓ Duplicate target returns exit code 18 with clear error")
-        print("  ✓ Unknown algorithm returns exit code 17 with clear error")
-        print("  ✓ Missing source dir returns exit code 14 with clear error")
-        print("  ✓ --config option works with explicit path")
-        print("  ✓ Auto-detect config works from subdirectory")
-        print("  ✓ Doctor operations are logged to profile log")
-        print("  ✓ Scan works after doctor --fix")
-        print("  ✓ Report works after doctor --fix")
-        print("  ✓ Full doctor -> fix -> scan workflow works")
-        print("  ✓ Output is grouped by status (ERROR > WARN > OK)")
+        print("  [OK] Normal doctor check works with warnings")
+        print("  [OK] --json output is valid, stable JSON with correct fields")
+        print("  [OK] --fix creates missing history and profile directories")
+        print("  [OK] Bad YAML returns exit code 2 with clear error")
+        print("  [OK] Duplicate target returns exit code 18 with clear error")
+        print("  [OK] Unknown algorithm returns exit code 17 with clear error")
+        print("  [OK] Missing source dir returns exit code 14 with clear error")
+        print("  [OK] --config option works with explicit path")
+        print("  [OK] Auto-detect config works from subdirectory")
+        print("  [OK] Doctor operations are logged to profile log")
+        print("  [OK] Scan works after doctor --fix")
+        print("  [OK] Report works after doctor --fix")
+        print("  [OK] Full doctor -> fix -> scan workflow works")
+        print("  [OK] Output is grouped by status (ERROR > WARN > OK)")
         print()
 
         return 0

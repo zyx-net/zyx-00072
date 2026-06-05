@@ -133,6 +133,7 @@ def doctor(config, json, fix):
     Verifies existence, read/write permissions, duplicate paths,
     and path traversal/overflow issues.
     """
+    config_path = config
     try:
         config_path = config or find_config()
         result = run_doctor(config_path, apply_fixes=fix)
@@ -144,14 +145,46 @@ def doctor(config, json, fix):
 
         sys.exit(result.exit_code())
 
-    except DoctorError as e:
-        click.echo(f"[ERR] {e.message}", err=True)
-        sys.exit(e.exit_code)
     except ConfigError as e:
-        click.echo(f"[ERR] Config error: {e.message}", err=True)
+        if json:
+            from .doctor import DoctorResult, CheckItem, CHECK_ERROR
+            from datetime import datetime
+            result = DoctorResult(
+                timestamp=datetime.now().isoformat(),
+                config_path=config_path or "unknown",
+                exit_code_override=e.exit_code,
+                error_category="config_error",
+            )
+            result.checks.append(CheckItem(
+                name="config.load",
+                status=CHECK_ERROR,
+                message=str(e.message),
+                fixable=False,
+            ))
+            click.echo(format_json_report(result))
+        else:
+            click.echo(f"[ERR] Config error: {e.message}", err=True)
         sys.exit(e.exit_code)
     except Exception as e:
-        click.echo(f"[ERR] Unexpected error: {e}", err=True)
+        if json:
+            from .doctor import DoctorResult, CheckItem, CHECK_ERROR
+            from datetime import datetime
+            from .constants import EXIT_GENERAL_ERROR
+            result = DoctorResult(
+                timestamp=datetime.now().isoformat(),
+                config_path=config_path or "unknown",
+                exit_code_override=EXIT_GENERAL_ERROR,
+                error_category="unexpected_error",
+            )
+            result.checks.append(CheckItem(
+                name="system.unexpected",
+                status=CHECK_ERROR,
+                message=str(e),
+                fixable=False,
+            ))
+            click.echo(format_json_report(result))
+        else:
+            click.echo(f"[ERR] Unexpected error: {e}", err=True)
         sys.exit(EXIT_GENERAL_ERROR)
 
 

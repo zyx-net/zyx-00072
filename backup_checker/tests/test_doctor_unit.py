@@ -436,10 +436,13 @@ class TestRunDoctor:
         bad_yaml = temp_dir / "bad.yaml"
         bad_yaml.write_text("this is: not: valid: yaml: [", encoding="utf-8")
 
-        with pytest.raises(DoctorError) as exc:
-            run_doctor(str(bad_yaml))
-        assert exc.value.exit_code == EXIT_CONFIG_ERROR
-        assert "YAML" in exc.value.message
+        result = run_doctor(str(bad_yaml))
+        assert result.exit_code() == EXIT_CONFIG_ERROR
+        assert result.error_category == "invalid_yaml"
+        assert result.exit_code_override == EXIT_CONFIG_ERROR
+        yaml_checks = [c for c in result.checks if c.status == CHECK_ERROR and "yaml" in c.name.lower()]
+        assert len(yaml_checks) >= 1
+        assert "YAML" in yaml_checks[0].message
 
     def test_duplicate_targets(self, temp_dir, sample_dirs):
         config_path = temp_dir / "dup.yaml"
@@ -458,10 +461,12 @@ class TestRunDoctor:
         with open(config_path, "w", encoding="utf-8") as f:
             yaml.dump(config_data, f)
 
-        with pytest.raises(DoctorError) as exc:
-            run_doctor(str(config_path))
-        assert exc.value.exit_code == EXIT_DOCTOR_DUPLICATE_TARGET
-        assert "Duplicate" in exc.value.message
+        result = run_doctor(str(config_path))
+        assert result.exit_code() == EXIT_DOCTOR_DUPLICATE_TARGET
+        assert result.error_category == "duplicate_target"
+        assert result.exit_code_override == EXIT_DOCTOR_DUPLICATE_TARGET
+        dup_checks = [c for c in result.checks if c.status == CHECK_ERROR and "Duplicate" in c.message]
+        assert len(dup_checks) >= 1
 
     def test_unknown_algorithm(self, temp_dir, sample_dirs):
         config_path = temp_dir / "unknown-algo.yaml"
@@ -477,15 +482,20 @@ class TestRunDoctor:
         with open(config_path, "w", encoding="utf-8") as f:
             yaml.dump(config_data, f)
 
-        with pytest.raises(DoctorError) as exc:
-            run_doctor(str(config_path))
-        assert exc.value.exit_code == EXIT_DOCTOR_UNKNOWN_ALGORITHM
-        assert "Unsupported hash algorithm" in exc.value.message
+        result = run_doctor(str(config_path))
+        assert result.exit_code() == EXIT_DOCTOR_UNKNOWN_ALGORITHM
+        assert result.error_category == "unknown_algorithm"
+        assert result.exit_code_override == EXIT_DOCTOR_UNKNOWN_ALGORITHM
+        algo_checks = [c for c in result.checks if c.status == CHECK_ERROR and "Unsupported hash algorithm" in c.message]
+        assert len(algo_checks) >= 1
 
     def test_config_not_found(self, temp_dir):
-        with pytest.raises(DoctorError) as exc:
-            run_doctor(str(temp_dir / "nonexistent.yaml"))
-        assert exc.value.exit_code == EXIT_CONFIG_ERROR
+        result = run_doctor(str(temp_dir / "nonexistent.yaml"))
+        assert result.exit_code() == EXIT_CONFIG_ERROR
+        assert result.error_category == "config_error"
+        assert result.exit_code_override == EXIT_CONFIG_ERROR
+        not_found_checks = [c for c in result.checks if c.status == CHECK_ERROR and "not found" in c.message.lower()]
+        assert len(not_found_checks) >= 1
 
     def test_missing_source_dir(self, temp_dir):
         config_path = temp_dir / "missing-source.yaml"
@@ -518,10 +528,12 @@ class TestRunDoctor:
             return original_makedirs(path, exist_ok=exist_ok)
 
         with patch("os.makedirs", side_effect=mock_makedirs):
-            with pytest.raises(DoctorError) as exc:
-                run_doctor(str(sample_config), apply_fixes=True)
-            assert exc.value.exit_code == EXIT_DOCTOR_PERMISSION
-            assert "Permission denied" in exc.value.message
+            result = run_doctor(str(sample_config), apply_fixes=True)
+            assert result.exit_code() == EXIT_DOCTOR_PERMISSION
+            assert result.error_category == "permission_denied"
+            assert result.exit_code_override == EXIT_DOCTOR_PERMISSION
+            perm_checks = [c for c in result.checks if c.status == CHECK_ERROR and "Permission denied" in c.message]
+            assert len(perm_checks) >= 1
 
     def test_log_written_to_profile(self, temp_dir, sample_config):
         from backup_checker.profile import read_operation_logs

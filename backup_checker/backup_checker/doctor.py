@@ -64,6 +64,8 @@ class DoctorResult:
     config_path: str
     checks: List[CheckItem] = field(default_factory=list)
     fixes_applied: List[str] = field(default_factory=list)
+    exit_code_override: Optional[int] = None
+    error_category: Optional[str] = None
 
     def by_status(self) -> Dict[str, List[CheckItem]]:
         grouped = {CHECK_OK: [], CHECK_WARN: [], CHECK_ERROR: []}
@@ -80,6 +82,8 @@ class DoctorResult:
         }
 
     def exit_code(self) -> int:
+        if self.exit_code_override is not None:
+            return self.exit_code_override
         counts = self.summary()
         if counts[CHECK_ERROR] > 0:
             return EXIT_DOCTOR_ERROR
@@ -88,13 +92,17 @@ class DoctorResult:
         return EXIT_SUCCESS
 
     def to_dict(self) -> Dict:
-        return {
+        data = {
             "timestamp": self.timestamp,
             "config_path": os.path.abspath(self.config_path),
             "summary": self.summary(),
             "checks": [c.to_dict() for c in self.checks],
             "fixes_applied": self.fixes_applied,
+            "exit_code": self.exit_code(),
         }
+        if self.error_category:
+            data["error_category"] = self.error_category
+        return data
 
 
 def _get_profile_log_dir(config: ManifestConfig) -> str:
@@ -487,11 +495,10 @@ def run_doctor(
             details={"duplicates": e.duplicates},
             fixable=False,
         ))
+        result.exit_code_override = EXIT_DOCTOR_DUPLICATE_TARGET
+        result.error_category = "duplicate_target"
         _log_doctor_operation(config_path, result, "error", f"Failed: duplicate targets")
-        raise DoctorError(
-            f"Duplicate target paths found: {', '.join(e.duplicates)}",
-            EXIT_DOCTOR_DUPLICATE_TARGET,
-        ) from e
+        return result
     except ConfigError as e:
         if "hash algorithm" in str(e).lower() or "Unsupported" in str(e):
             result.checks.append(CheckItem(
@@ -500,8 +507,10 @@ def run_doctor(
                 message=str(e.message),
                 fixable=False,
             ))
+            result.exit_code_override = EXIT_DOCTOR_UNKNOWN_ALGORITHM
+            result.error_category = "unknown_algorithm"
             _log_doctor_operation(config_path, result, "error", f"Failed: unknown hash algorithm")
-            raise DoctorError(str(e.message), EXIT_DOCTOR_UNKNOWN_ALGORITHM) from e
+            return result
         if "YAML" in str(e) or "Invalid YAML" in str(e):
             result.checks.append(CheckItem(
                 name="config.yaml",
@@ -509,16 +518,20 @@ def run_doctor(
                 message=str(e.message),
                 fixable=False,
             ))
+            result.exit_code_override = EXIT_CONFIG_ERROR
+            result.error_category = "invalid_yaml"
             _log_doctor_operation(config_path, result, "error", f"Failed: bad YAML format")
-            raise DoctorError(str(e.message), EXIT_CONFIG_ERROR) from e
+            return result
         result.checks.append(CheckItem(
             name="config.load",
             status=CHECK_ERROR,
             message=str(e.message),
             fixable=False,
         ))
+        result.exit_code_override = EXIT_CONFIG_ERROR
+        result.error_category = "config_error"
         _log_doctor_operation(config_path, result, "error", f"Failed: config error")
-        raise DoctorError(str(e.message), EXIT_CONFIG_ERROR) from e
+        return result
 
     base_dir = os.path.dirname(os.path.abspath(config_path))
 
@@ -566,11 +579,10 @@ def run_doctor(
                 details={"error": str(e)},
                 fixable=False,
             ))
+            result.exit_code_override = EXIT_DOCTOR_PERMISSION
+            result.error_category = "permission_denied"
             _log_doctor_operation(config_path, result, "error", f"Failed: permission denied creating history dir")
-            raise DoctorError(
-                f"Permission denied: cannot create history directory: {e}",
-                EXIT_DOCTOR_PERMISSION,
-            ) from e
+            return result
 
     profile_check = _check_profile_log_dir(config)
     result.checks.append(profile_check)
@@ -590,11 +602,10 @@ def run_doctor(
                 details={"error": str(e)},
                 fixable=False,
             ))
+            result.exit_code_override = EXIT_DOCTOR_PERMISSION
+            result.error_category = "permission_denied"
             _log_doctor_operation(config_path, result, "error", f"Failed: permission denied creating profile dir")
-            raise DoctorError(
-                f"Permission denied: cannot create profile log directory: {e}",
-                EXIT_DOCTOR_PERMISSION,
-            ) from e
+            return result
 
     if history_check.status == CHECK_OK and os.path.exists(_get_history_dir(config)):
         result.checks.append(_check_path_readable(_get_history_dir(config), "history_dir"))
