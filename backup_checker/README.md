@@ -271,7 +271,7 @@ SUMMARY
     Note:   File in backup but not covered by any target
 
 ======================================================================
-✓ Saved history to: D:\workSpace\AI__SPACE\zyx-00072\examples\.backup-history\scan_20260605_153711.json
+[OK] Saved history to: D:\workSpace\AI__SPACE\zyx-00072\examples\.backup-history\scan_20260605_153711.json
 ```
 
 **退出码：** `5`（存在缺失文件）
@@ -451,7 +451,7 @@ backup-checker scan -c backup-manifest-duplicate.yaml --no-save
 
 **输出：**
 ```
-✗ Duplicate target paths found: documents/
+[ERR] Duplicate target paths found: documents/
   Duplicate paths: documents/
 ```
 

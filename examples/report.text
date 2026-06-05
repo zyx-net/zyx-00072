@@ -1,0 +1,53 @@
+======================================================================
+BACKUP VERIFICATION REPORT
+======================================================================
+Manifest:       example-backup
+Source Dir:     D:\workSpace\AI__SPACE\zyx-00072\examples\source
+Backup Dir:     D:\workSpace\AI__SPACE\zyx-00072\examples\backup
+Hash Algorithm: sha256
+Retention:      30 days
+
+Scanned At:     2026-06-05 17:04:59
+Source Files:   6
+Backup Files:   7
+
+----------------------------------------------------------------------
+SUMMARY
+----------------------------------------------------------------------
+  [MISS] MISSING             1 files
+  [CORR] CORRUPT             1 files
+  [EXP] EXPIRED             1 files
+  [UNREG] UNREGISTERED        1 files
+  [OK] OK                  4 files
+
+  [MISS] Found 4 issue(s) requiring attention
+
+----------------------------------------------------------------------
+[MISS] MISSING (1 files)
+----------------------------------------------------------------------
+  documents/missing-file.txt
+    Source: 44dabc628bda423f... (68 B, 2026-06-05 15:12:49)
+    Backup: NOT FOUND
+
+----------------------------------------------------------------------
+[CORR] CORRUPT (1 files)
+----------------------------------------------------------------------
+  documents/contract.txt
+    Source: f4d697816a67a306... (60 B, 2026-06-05 17:04:57)
+    Backup: 658dbc4a46dd8a90... (72 B, 2026-06-05 17:04:57)
+
+----------------------------------------------------------------------
+[EXP] EXPIRED (1 files)
+----------------------------------------------------------------------
+  documents/old-project-2020.zip
+    Backup: e9a47d915e0951c6... (79 B, 2025-01-21 17:00:22)
+    Note:   File in backup but not in source, older than 30 days
+
+----------------------------------------------------------------------
+[UNREG] UNREGISTERED (1 files)
+----------------------------------------------------------------------
+  extra/unregistered-file.txt
+    Backup: 6fd3256b3c2d2af3... (60 B, 2026-06-05 15:12:49)
+    Note:   File in backup but not covered by any target
+
+======================================================================

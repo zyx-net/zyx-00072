@@ -139,7 +139,7 @@ def scan(config, no_save, compare_history, brief):
 
         if not no_save:
             history_path = save_history(manifest_config, compare_result)
-            click.echo(f"✓ved history to: {history_path}")
+            click.echo(f"[OK] Saved history to: {history_path}")
 
         summary = compare_result.summary()
         if summary.get(FILE_STATUS_MISSING, 0) > 0:
