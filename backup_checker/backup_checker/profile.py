@@ -3,8 +3,8 @@ import json
 import yaml
 import shutil
 from datetime import datetime
-from typing import Dict, List, Optional, Tuple
-from dataclasses import dataclass
+from typing import Dict, List, Optional, Tuple, Any
+from dataclasses import dataclass, field, asdict
 
 from .constants import (
     EXIT_PROFILE_CONFLICT,
@@ -75,6 +75,260 @@ class ProfileOperationLog:
     details: str
 
 
+@dataclass
+class FieldDiff:
+    field: str
+    display_name: str
+    change_type: str
+    old_value: Optional[Any] = None
+    new_value: Optional[Any] = None
+    added: List[Any] = field(default_factory=list)
+    removed: List[Any] = field(default_factory=list)
+
+    def to_dict(self) -> Dict:
+        return asdict(self)
+
+
+@dataclass
+class ProfileDiffResult:
+    current_config: str
+    incoming_file: str
+    has_changes: bool
+    has_conflicts: bool
+    field_diffs: List[FieldDiff] = field(default_factory=list)
+    summary: Dict[str, int] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict:
+        return {
+            "current_config": self.current_config,
+            "incoming_file": self.incoming_file,
+            "has_changes": self.has_changes,
+            "has_conflicts": self.has_conflicts,
+            "field_diffs": [fd.to_dict() for fd in self.field_diffs],
+            "summary": self.summary,
+        }
+
+
+def diff_profiles(config_path: str, json_path: str) -> ProfileDiffResult:
+    if not os.path.exists(config_path):
+        raise ProfileInvalidConfigError(f"Config file not found: {config_path}")
+
+    if not os.path.exists(json_path):
+        raise ProfileInvalidJsonError(f"JSON file not found: {json_path}")
+
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            current_data = yaml.safe_load(f)
+    except yaml.YAMLError as e:
+        raise ProfileInvalidConfigError(f"Invalid YAML format: {e}")
+
+    if not isinstance(current_data, dict) or "manifest" not in current_data:
+        raise ProfileInvalidConfigError("Current config missing 'manifest' section")
+
+    try:
+        with open(json_path, "r", encoding="utf-8") as f:
+            import_data = json.load(f)
+    except json.JSONDecodeError as e:
+        raise ProfileInvalidJsonError(f"Invalid JSON format: {e}")
+    except PermissionError:
+        raise ProfilePermissionError(f"Permission denied: cannot read {json_path}")
+
+    _validate_import_data(import_data)
+
+    current = current_data["manifest"]
+    incoming = import_data["manifest"]
+
+    field_diffs: List[FieldDiff] = []
+
+    simple_fields = [
+        ("name", "清单名称"),
+        ("source_dir", "源目录"),
+        ("backup_dir", "备份目录"),
+        ("hash_algorithm", "哈希算法"),
+        ("retention_days", "保留天数"),
+    ]
+
+    for field, display_name in simple_fields:
+        old_val = current.get(field)
+        new_val = incoming.get(field)
+        if old_val != new_val:
+            change_type = "modify"
+            if old_val is None:
+                change_type = "add"
+            elif new_val is None:
+                change_type = "delete"
+            field_diffs.append(FieldDiff(
+                field=field,
+                display_name=display_name,
+                change_type=change_type,
+                old_value=old_val,
+                new_value=new_val,
+            ))
+
+    current_targets = {t.get("path", ""): t for t in current.get("targets", [])}
+    incoming_targets = {t.get("path", ""): t for t in incoming.get("targets", [])}
+
+    target_added = []
+    target_removed = []
+    target_modified = []
+
+    for path in incoming_targets:
+        if path not in current_targets:
+            target_added.append(incoming_targets[path])
+        else:
+            if current_targets[path] != incoming_targets[path]:
+                target_modified.append({
+                    "path": path,
+                    "old": current_targets[path],
+                    "new": incoming_targets[path],
+                })
+
+    for path in current_targets:
+        if path not in incoming_targets:
+            target_removed.append(current_targets[path])
+
+    if target_added or target_removed or target_modified:
+        if target_modified or (target_added and target_removed):
+            change_type = "modify"
+        elif target_added:
+            change_type = "add"
+        else:
+            change_type = "delete"
+        field_diffs.append(FieldDiff(
+            field="targets",
+            display_name="目标列表",
+            change_type=change_type,
+            added=target_added,
+            removed=target_removed,
+        ))
+
+    current_excludes = set(current.get("exclude_patterns", []))
+    incoming_excludes = set(incoming.get("exclude_patterns", []))
+
+    exclude_added = sorted(list(incoming_excludes - current_excludes))
+    exclude_removed = sorted(list(current_excludes - incoming_excludes))
+
+    if exclude_added or exclude_removed:
+        if exclude_added and exclude_removed:
+            change_type = "modify"
+        elif exclude_added:
+            change_type = "add"
+        else:
+            change_type = "delete"
+        field_diffs.append(FieldDiff(
+            field="exclude_patterns",
+            display_name="排除规则",
+            change_type=change_type,
+            added=exclude_added,
+            removed=exclude_removed,
+        ))
+
+    has_changes = len(field_diffs) > 0
+
+    conflicts = _detect_conflicts(current, incoming) if current else {}
+    has_conflicts = len(conflicts) > 0
+
+    summary = {
+        "added": sum(1 for fd in field_diffs if fd.change_type == "add"),
+        "removed": sum(1 for fd in field_diffs if fd.change_type == "delete"),
+        "modified": sum(1 for fd in field_diffs if fd.change_type == "modify"),
+        "total": len(field_diffs),
+    }
+
+    diff_result = ProfileDiffResult(
+        current_config=os.path.abspath(config_path),
+        incoming_file=os.path.abspath(json_path),
+        has_changes=has_changes,
+        has_conflicts=has_conflicts,
+        field_diffs=field_diffs,
+        summary=summary,
+    )
+
+    status = "no_changes" if not has_changes else ("conflict" if has_conflicts else "changes_found")
+    _log_operation(
+        config_path,
+        "diff",
+        json_path,
+        None,
+        status,
+        f"Diff comparison: {summary.get('added', 0)} added, "
+        f"{summary.get('removed', 0)} removed, "
+        f"{summary.get('modified', 0)} modified",
+    )
+
+    return diff_result
+
+
+def format_diff_console(diff: ProfileDiffResult) -> str:
+    lines = []
+    lines.append("=" * 70)
+    lines.append("PROFILE DIFF COMPARISON")
+    lines.append("=" * 70)
+    lines.append(f"Current config: {diff.current_config}")
+    lines.append(f"Incoming file:  {diff.incoming_file}")
+    lines.append("")
+
+    if not diff.has_changes:
+        lines.append("[OK] No differences found. Configurations are identical.")
+        return "\n".join(lines)
+
+    lines.append(f"SUMMARY: {diff.summary.get('added', 0)} added, "
+                 f"{diff.summary.get('removed', 0)} removed, "
+                 f"{diff.summary.get('modified', 0)} modified")
+    lines.append("")
+
+    for fd in diff.field_diffs:
+        if fd.change_type == "add":
+            prefix = "[+] ADD"
+        elif fd.change_type == "delete":
+            prefix = "[-] DEL"
+        else:
+            prefix = "[~] MOD"
+
+        lines.append(f"{prefix} {fd.display_name}")
+
+        if fd.field in ["name", "source_dir", "backup_dir", "hash_algorithm", "retention_days"]:
+            if fd.old_value is not None:
+                lines.append(f"    - old: {fd.old_value}")
+            if fd.new_value is not None:
+                lines.append(f"    + new: {fd.new_value}")
+
+        elif fd.field == "targets":
+            if fd.added:
+                lines.append(f"    + added targets ({len(fd.added)}):")
+                for t in fd.added:
+                    desc = f" - {t.get('description', '')}" if t.get('description') else ""
+                    lines.append(f"        {t.get('path', '')}{desc}")
+            if fd.removed:
+                lines.append(f"    - removed targets ({len(fd.removed)}):")
+                for t in fd.removed:
+                    desc = f" - {t.get('description', '')}" if t.get('description') else ""
+                    lines.append(f"        {t.get('path', '')}{desc}")
+
+        elif fd.field == "exclude_patterns":
+            if fd.added:
+                lines.append(f"    + added patterns ({len(fd.added)}):")
+                for p in fd.added:
+                    lines.append(f"        {p}")
+            if fd.removed:
+                lines.append(f"    - removed patterns ({len(fd.removed)}):")
+                for p in fd.removed:
+                    lines.append(f"        {p}")
+
+        lines.append("")
+
+    if diff.has_conflicts:
+        lines.append("[WARN] Configuration conflicts detected.")
+        lines.append("       Use 'profile import --force' to overwrite,")
+        lines.append("       or 'profile import --dry-run' to preview changes.")
+
+    return "\n".join(lines)
+
+
+def format_diff_json(diff: ProfileDiffResult) -> str:
+    return json.dumps(diff.to_dict(), indent=2, ensure_ascii=False)
+
+
 def export_profile(config_path: str, output_path: str) -> str:
     if not os.path.exists(config_path):
         raise ProfileInvalidConfigError(f"Config file not found: {config_path}")
@@ -141,7 +395,8 @@ def import_profile(
     json_path: str,
     target_config_path: str,
     force: bool = False,
-) -> Tuple[str, Optional[str]]:
+    dry_run: bool = False,
+) -> Tuple[str, Optional[str], Optional[ProfileDiffResult]]:
     if not os.path.exists(json_path):
         raise ProfileInvalidJsonError(f"JSON file not found: {json_path}")
 
@@ -176,9 +431,85 @@ def import_profile(
                 f"Existing config has invalid YAML: {e}"
             )
 
+    diff_result = None
+    if config_exists:
+        diff_result = diff_profiles(target_config_path, json_path)
+    else:
+        diff_result = ProfileDiffResult(
+            current_config=os.path.abspath(target_config_path) if config_exists else "N/A (new file)",
+            incoming_file=os.path.abspath(json_path),
+            has_changes=True,
+            has_conflicts=False,
+            field_diffs=[],
+            summary={"added": 0, "removed": 0, "modified": 0, "total": 0},
+        )
+
     conflicts = {}
     if existing_config:
         conflicts = _detect_conflicts(existing_config, manifest)
+
+    if dry_run:
+        if conflicts and not force:
+            conflict_msg = _format_conflict_message(conflicts)
+            _log_operation(
+                target_config_path,
+                "dry_run",
+                json_path,
+                None,
+                "conflict",
+                f"Dry-run: conflicts detected: {list(conflicts.keys())}",
+            )
+            raise ProfileConflictError(conflict_msg, conflicts)
+
+        if conflicts:
+            _log_operation(
+                target_config_path,
+                "dry_run",
+                json_path,
+                None,
+                "conflict",
+                f"Dry-run: conflicts detected (force=True): {list(conflicts.keys())}",
+            )
+        else:
+            _log_operation(
+                target_config_path,
+                "dry_run",
+                json_path,
+                None,
+                "success",
+                "Dry-run: no conflicts detected, import would succeed",
+            )
+
+        target_dir = os.path.dirname(os.path.abspath(target_config_path))
+        if target_dir and not os.path.exists(target_dir):
+            parent_dir = os.path.dirname(target_dir) if target_dir else "."
+            if not os.access(parent_dir, os.W_OK):
+                raise ProfilePermissionError(
+                    f"Permission denied: cannot create directory {target_dir}"
+                )
+        elif os.path.exists(target_config_path):
+            if not os.access(target_config_path, os.W_OK):
+                raise ProfilePermissionError(
+                    f"Permission denied: cannot write to {target_config_path}"
+                )
+        else:
+            if target_dir and not os.access(target_dir, os.W_OK):
+                raise ProfilePermissionError(
+                    f"Permission denied: cannot write to {target_dir}"
+                )
+
+        new_config = _build_config_from_import(manifest, target_config_path)
+        try:
+            _validate_imported_config(new_config)
+        except DuplicateTargetError as e:
+            raise ProfileError(
+                f"Duplicate target paths found: {', '.join(e.duplicates)}",
+                EXIT_DUPLICATE_TARGET,
+            )
+        except ConfigError as e:
+            raise ProfileInvalidConfigError(e.message)
+
+        return None, None, diff_result
 
     if conflicts and not force:
         conflict_msg = _format_conflict_message(conflicts)
@@ -205,7 +536,7 @@ def import_profile(
             _restore_from_backup(backup_path, target_config_path)
             _log_operation(
                 target_config_path,
-                "import",
+                "rollback",
                 json_path,
                 backup_path,
                 "rolled_back",
@@ -220,7 +551,7 @@ def import_profile(
             _restore_from_backup(backup_path, target_config_path)
             _log_operation(
                 target_config_path,
-                "import",
+                "rollback",
                 json_path,
                 backup_path,
                 "rolled_back",
@@ -236,7 +567,7 @@ def import_profile(
             if backup_path and os.path.exists(backup_path):
                 _log_operation(
                     target_config_path,
-                    "import",
+                    "rollback",
                     json_path,
                     backup_path,
                     "rolled_back",
@@ -254,7 +585,7 @@ def import_profile(
             _restore_from_backup(backup_path, target_config_path)
             _log_operation(
                 target_config_path,
-                "import",
+                "rollback",
                 json_path,
                 backup_path,
                 "rolled_back",
@@ -268,7 +599,7 @@ def import_profile(
             _restore_from_backup(backup_path, target_config_path)
             _log_operation(
                 target_config_path,
-                "import",
+                "rollback",
                 json_path,
                 backup_path,
                 "rolled_back",
@@ -290,7 +621,7 @@ def import_profile(
         + (f" (overwrote existing config, backup at {backup_path})" if config_exists else ""),
     )
 
-    return target_config_path, backup_path
+    return target_config_path, backup_path, diff_result
 
 
 def _validate_import_data(data: Dict) -> None:

@@ -49,7 +49,11 @@ from .drill import run_drill, run_drill_from_history, DrillError
 from .profile import (
     export_profile,
     import_profile,
+    diff_profiles,
+    format_diff_console,
+    format_diff_json,
     read_operation_logs,
+    _log_operation,
     ProfileError,
     ProfileConflictError,
     ProfileInvalidJsonError,
@@ -612,6 +616,92 @@ def profile_export(config, output):
         sys.exit(EXIT_GENERAL_ERROR)
 
 
+@profile.command("diff")
+@click.argument("json_file")
+@click.option(
+    "--config", "-c",
+    help="Path to the manifest config file (default: auto-detect)",
+)
+@click.option(
+    "--json", "json_output",
+    is_flag=True,
+    help="Output diff as stable JSON instead of console report",
+)
+def profile_diff(json_file, config, json_output):
+    """Compare current manifest configuration with an exported profile file.
+
+    JSON_FILE: Path to the JSON profile file to compare against.
+    """
+    try:
+        config_path = config or find_config()
+        diff = diff_profiles(config_path, json_file)
+
+        status = "no_changes" if not diff.has_changes else ("conflict" if diff.has_conflicts else "changes_found")
+        _log_operation(
+            config_path,
+            "diff",
+            json_file,
+            None,
+            status,
+            f"Diff comparison: {diff.summary.get('added', 0)} added, "
+            f"{diff.summary.get('removed', 0)} removed, "
+            f"{diff.summary.get('modified', 0)} modified",
+        )
+
+        if json_output:
+            click.echo(format_diff_json(diff))
+        else:
+            click.echo(format_diff_console(diff))
+
+        sys.exit(EXIT_SUCCESS if not diff.has_changes else EXIT_PROFILE_CONFLICT)
+
+    except ProfileConflictError as e:
+        if json_output:
+            import json
+            error_result = {
+                "error": "profile_conflict",
+                "message": e.message,
+                "conflicts": e.conflicts,
+            }
+            click.echo(json.dumps(error_result, indent=2, ensure_ascii=False))
+        else:
+            click.echo(f"[ERR] {e.message}", err=True)
+        sys.exit(e.exit_code)
+    except ProfileError as e:
+        if json_output:
+            import json
+            error_result = {
+                "error": "profile_error",
+                "message": e.message,
+            }
+            click.echo(json.dumps(error_result, indent=2, ensure_ascii=False))
+        else:
+            click.echo(f"[ERR] {e.message}", err=True)
+        sys.exit(e.exit_code)
+    except ConfigError as e:
+        if json_output:
+            import json
+            error_result = {
+                "error": "config_error",
+                "message": e.message,
+            }
+            click.echo(json.dumps(error_result, indent=2, ensure_ascii=False))
+        else:
+            click.echo(f"[ERR] Config error: {e.message}", err=True)
+        sys.exit(e.exit_code)
+    except Exception as e:
+        if json_output:
+            import json
+            error_result = {
+                "error": "unexpected_error",
+                "message": str(e),
+            }
+            click.echo(json.dumps(error_result, indent=2, ensure_ascii=False))
+        else:
+            click.echo(f"[ERR] Unexpected error: {e}", err=True)
+        sys.exit(EXIT_GENERAL_ERROR)
+
+
 @profile.command("import")
 @click.argument("json_file")
 @click.option(
@@ -623,34 +713,116 @@ def profile_export(config, output):
     is_flag=True,
     help="Force overwrite if conflicts exist",
 )
-def profile_import(json_file, config, force):
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Preview changes without writing config or creating backups",
+)
+@click.option(
+    "--json", "json_output",
+    is_flag=True,
+    help="Output results as stable JSON instead of console report",
+)
+def profile_import(json_file, config, force, dry_run, json_output):
     """Import configuration from a JSON profile file.
 
     JSON_FILE: Path to the JSON profile file to import.
     """
     try:
         target_config_path = config or os.path.join(os.getcwd(), CONFIG_FILENAME)
-        result_path, backup_path = import_profile(json_file, target_config_path, force)
+        result_path, backup_path, diff = import_profile(
+            json_file, target_config_path, force, dry_run
+        )
 
-        if backup_path:
-            click.echo(f"[OK] Rollback backup created at: {backup_path}")
-            click.echo(f"[OK] Profile imported and config overwritten: {result_path}")
+        if dry_run:
+            if json_output:
+                import json
+                dry_run_result = {
+                    "operation": "dry_run",
+                    "would_succeed": not diff.has_conflicts if diff else True,
+                    "has_conflicts": diff.has_conflicts if diff else False,
+                    "diff": diff.to_dict() if diff else None,
+                    "backup_path": backup_path,
+                    "target_config": target_config_path,
+                }
+                click.echo(json.dumps(dry_run_result, indent=2, ensure_ascii=False))
+            else:
+                click.echo("=" * 70)
+                click.echo("PROFILE IMPORT DRY-RUN")
+                click.echo("=" * 70)
+                if diff:
+                    click.echo(format_diff_console(diff))
+                    click.echo("")
+                if diff and diff.has_conflicts:
+                    click.echo("[WARN] Conflicts detected. Use --force to overwrite.")
+                else:
+                    click.echo("[OK] No conflicts detected.")
+                click.echo(f"[OK] Dry-run completed. No changes made.")
+                click.echo(f"     Target: {target_config_path}")
+            sys.exit(EXIT_SUCCESS if not (diff and diff.has_conflicts) else EXIT_PROFILE_CONFLICT)
+
+        if json_output:
+            import json
+            import_result = {
+                "operation": "import",
+                "success": True,
+                "target_config": result_path,
+                "backup_path": backup_path,
+                "diff": diff.to_dict() if diff else None,
+                "was_overwrite": backup_path is not None,
+            }
+            click.echo(json.dumps(import_result, indent=2, ensure_ascii=False))
         else:
-            click.echo(f"[OK] Profile imported to: {result_path}")
+            if backup_path:
+                click.echo(f"[OK] Rollback backup created at: {backup_path}")
+                click.echo(f"[OK] Profile imported and config overwritten: {result_path}")
+            else:
+                click.echo(f"[OK] Profile imported to: {result_path}")
 
         sys.exit(EXIT_SUCCESS)
 
     except ProfileConflictError as e:
-        click.echo(f"[ERR] {e.message}", err=True)
-        click.echo("", err=True)
-        click.echo("To proceed with overwrite, use --force flag:", err=True)
-        click.echo(f"  backup-checker profile import {json_file} --force", err=True)
+        if json_output:
+            import json
+            error_result = {
+                "operation": "import",
+                "success": False,
+                "error": "profile_conflict",
+                "message": e.message,
+                "conflicts": e.conflicts,
+            }
+            click.echo(json.dumps(error_result, indent=2, ensure_ascii=False))
+        else:
+            click.echo(f"[ERR] {e.message}", err=True)
+            click.echo("", err=True)
+            click.echo("To proceed with overwrite, use --force flag:", err=True)
+            click.echo(f"  backup-checker profile import {json_file} --force", err=True)
         sys.exit(e.exit_code)
     except ProfileError as e:
-        click.echo(f"[ERR] {e.message}", err=True)
+        if json_output:
+            import json
+            error_result = {
+                "operation": "import",
+                "success": False,
+                "error": "profile_error",
+                "message": e.message,
+            }
+            click.echo(json.dumps(error_result, indent=2, ensure_ascii=False))
+        else:
+            click.echo(f"[ERR] {e.message}", err=True)
         sys.exit(e.exit_code)
     except Exception as e:
-        click.echo(f"[ERR] Unexpected error: {e}", err=True)
+        if json_output:
+            import json
+            error_result = {
+                "operation": "import",
+                "success": False,
+                "error": "unexpected_error",
+                "message": str(e),
+            }
+            click.echo(json.dumps(error_result, indent=2, ensure_ascii=False))
+        else:
+            click.echo(f"[ERR] Unexpected error: {e}", err=True)
         sys.exit(EXIT_GENERAL_ERROR)
 
 

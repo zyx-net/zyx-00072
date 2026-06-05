@@ -18,6 +18,9 @@ import pytest
 from backup_checker.profile import (
     export_profile,
     import_profile,
+    diff_profiles,
+    format_diff_console,
+    format_diff_json,
     read_operation_logs,
     ProfileError,
     ProfileConflictError,
@@ -28,6 +31,8 @@ from backup_checker.profile import (
     _validate_import_data,
     _detect_conflicts,
     _format_conflict_message,
+    FieldDiff,
+    ProfileDiffResult,
 )
 from backup_checker.constants import (
     EXIT_PROFILE_CONFLICT,
@@ -166,7 +171,7 @@ class TestImportProfile:
         target_config = temp_dir / "backup-manifest.yaml"
         assert not target_config.exists()
 
-        result_path, backup_path = import_profile(str(sample_json_profile), str(target_config))
+        result_path, backup_path, _ = import_profile(str(sample_json_profile), str(target_config))
 
         assert result_path == str(target_config)
         assert backup_path is None
@@ -200,7 +205,7 @@ class TestImportProfile:
     def test_import_with_force_overwrite(self, temp_dir, sample_config, sample_json_profile):
         original_content = sample_config.read_text(encoding="utf-8")
 
-        result_path, backup_path = import_profile(
+        result_path, backup_path, _ = import_profile(
             str(sample_json_profile), str(sample_config), force=True
         )
 
@@ -549,6 +554,572 @@ class TestOperationLogs:
         log_dir = temp_dir / PROFILE_LOG_DIRNAME
         log_file = log_dir / PROFILE_LOG_FILENAME
         assert log_file.exists()
+
+
+class TestDiffProfiles:
+    def test_diff_no_changes(self, temp_dir, sample_config):
+        export_path = temp_dir / "exported.json"
+        export_profile(str(sample_config), str(export_path))
+
+        diff = diff_profiles(str(sample_config), str(export_path))
+        assert not diff.has_changes
+        assert not diff.has_conflicts
+        assert len(diff.field_diffs) == 0
+        assert diff.summary["total"] == 0
+
+    def test_diff_all_fields_modified(self, temp_dir, sample_config):
+        modified_json = temp_dir / "modified.json"
+        modified_data = {
+            "profile_version": "1.0",
+            "exported_at": "2024-01-01T00:00:00",
+            "source_config": "/path/to/config",
+            "manifest": {
+                "name": "modified-name",
+                "source_dir": "new_source",
+                "backup_dir": "new_backup",
+                "targets": [
+                    {"path": "new_target/", "description": "New target"},
+                ],
+                "retention_days": 60,
+                "exclude_patterns": ["*.new"],
+                "hash_algorithm": "md5",
+            },
+        }
+        with open(modified_json, "w", encoding="utf-8") as f:
+            json.dump(modified_data, f, indent=2)
+
+        diff = diff_profiles(str(sample_config), str(modified_json))
+        assert diff.has_changes
+        assert diff.has_conflicts
+        assert len(diff.field_diffs) == 7
+
+        field_names = {fd.field for fd in diff.field_diffs}
+        assert "name" in field_names
+        assert "source_dir" in field_names
+        assert "backup_dir" in field_names
+        assert "targets" in field_names
+        assert "retention_days" in field_names
+        assert "exclude_patterns" in field_names
+        assert "hash_algorithm" in field_names
+
+        name_diff = next(fd for fd in diff.field_diffs if fd.field == "name")
+        assert name_diff.change_type == "modify"
+        assert name_diff.old_value == "test-backup"
+        assert name_diff.new_value == "modified-name"
+
+        targets_diff = next(fd for fd in diff.field_diffs if fd.field == "targets")
+        assert len(targets_diff.added) == 1
+        assert len(targets_diff.removed) == 2
+
+    def test_diff_only_exclude_patterns(self, temp_dir, sample_config):
+        modified_json = temp_dir / "modified.json"
+        modified_data = {
+            "profile_version": "1.0",
+            "manifest": {
+                "name": "test-backup",
+                "source_dir": "source",
+                "backup_dir": "backup",
+                "targets": [
+                    {"path": "documents/", "description": "Important documents"},
+                    {"path": "photos/", "description": "Personal photos"},
+                ],
+                "retention_days": 30,
+                "exclude_patterns": ["*.tmp", "*.bak"],
+                "hash_algorithm": "sha256",
+            },
+        }
+        with open(modified_json, "w", encoding="utf-8") as f:
+            json.dump(modified_data, f, indent=2)
+
+        diff = diff_profiles(str(sample_config), str(modified_json))
+        assert diff.has_changes
+        assert len(diff.field_diffs) == 1
+        assert diff.field_diffs[0].field == "exclude_patterns"
+        assert diff.field_diffs[0].added == ["*.bak"]
+        assert diff.field_diffs[0].removed == ["*.log"]
+
+    def test_diff_only_targets(self, temp_dir, sample_config):
+        modified_json = temp_dir / "modified.json"
+        modified_data = {
+            "profile_version": "1.0",
+            "manifest": {
+                "name": "test-backup",
+                "source_dir": "source",
+                "backup_dir": "backup",
+                "targets": [
+                    {"path": "documents/", "description": "Important documents"},
+                    {"path": "videos/", "description": "Video files"},
+                ],
+                "retention_days": 30,
+                "exclude_patterns": ["*.tmp", "*.log"],
+                "hash_algorithm": "sha256",
+            },
+        }
+        with open(modified_json, "w", encoding="utf-8") as f:
+            json.dump(modified_data, f, indent=2)
+
+        diff = diff_profiles(str(sample_config), str(modified_json))
+        assert diff.has_changes
+        assert len(diff.field_diffs) == 1
+        targets_diff = diff.field_diffs[0]
+        assert targets_diff.field == "targets"
+        assert len(targets_diff.added) == 1
+        assert targets_diff.added[0]["path"] == "videos/"
+        assert len(targets_diff.removed) == 1
+        assert targets_diff.removed[0]["path"] == "photos/"
+
+    def test_diff_config_not_found(self, temp_dir, sample_json_profile):
+        with pytest.raises(ProfileInvalidConfigError):
+            diff_profiles(str(temp_dir / "nonexistent.yaml"), str(sample_json_profile))
+
+    def test_diff_json_not_found(self, temp_dir, sample_config):
+        with pytest.raises(ProfileInvalidJsonError):
+            diff_profiles(str(sample_config), str(temp_dir / "nonexistent.json"))
+
+    def test_diff_invalid_json(self, temp_dir, sample_config):
+        bad_json = temp_dir / "bad.json"
+        bad_json.write_text("{this is not valid json", encoding="utf-8")
+        with pytest.raises(ProfileInvalidJsonError):
+            diff_profiles(str(sample_config), str(bad_json))
+
+    def test_diff_unknown_algorithm(self, temp_dir, sample_config):
+        bad_json = temp_dir / "bad.json"
+        bad_json.write_text(json.dumps({
+            "manifest": {
+                "source_dir": "src",
+                "backup_dir": "bak",
+                "targets": [{"path": "data/"}],
+                "hash_algorithm": "unknown_algo",
+            }
+        }), encoding="utf-8")
+        with pytest.raises(ProfileUnknownAlgorithmError):
+            diff_profiles(str(sample_config), str(bad_json))
+
+
+class TestDiffFormatters:
+    def test_format_console_no_changes(self, temp_dir, sample_config):
+        export_path = temp_dir / "exported.json"
+        export_profile(str(sample_config), str(export_path))
+        diff = diff_profiles(str(sample_config), str(export_path))
+        output = format_diff_console(diff)
+        assert "PROFILE DIFF COMPARISON" in output
+        assert "No differences found" in output
+        assert "[OK]" in output
+
+    def test_format_console_with_changes(self, temp_dir, sample_config):
+        modified_json = temp_dir / "modified.json"
+        modified_data = {
+            "profile_version": "1.0",
+            "manifest": {
+                "name": "new-name",
+                "source_dir": "new_src",
+                "backup_dir": "backup",
+                "targets": [
+                    {"path": "documents/", "description": "Important documents"},
+                    {"path": "new_target/", "description": "New"},
+                ],
+                "retention_days": 30,
+                "exclude_patterns": ["*.tmp", "*.log", "*.new"],
+                "hash_algorithm": "sha256",
+            },
+        }
+        with open(modified_json, "w", encoding="utf-8") as f:
+            json.dump(modified_data, f, indent=2)
+
+        diff = diff_profiles(str(sample_config), str(modified_json))
+        output = format_diff_console(diff)
+        assert "SUMMARY:" in output
+        assert "[~] MOD" in output
+        assert "[+] ADD" in output
+        assert "清单名称" in output
+        assert "源目录" in output
+        assert "目标列表" in output
+        assert "排除规则" in output
+
+    def test_format_json_stable_parsable(self, temp_dir, sample_config):
+        modified_json = temp_dir / "modified.json"
+        modified_data = {
+            "profile_version": "1.0",
+            "manifest": {
+                "name": "new-name",
+                "source_dir": "new_src",
+                "backup_dir": "backup",
+                "targets": [{"path": "data/"}],
+                "retention_days": 30,
+                "exclude_patterns": ["*.tmp"],
+                "hash_algorithm": "sha256",
+            },
+        }
+        with open(modified_json, "w", encoding="utf-8") as f:
+            json.dump(modified_data, f, indent=2)
+
+        diff = diff_profiles(str(sample_config), str(modified_json))
+        output = format_diff_json(diff)
+
+        parsed = json.loads(output)
+        assert "current_config" in parsed
+        assert "incoming_file" in parsed
+        assert "has_changes" in parsed
+        assert "has_conflicts" in parsed
+        assert "field_diffs" in parsed
+        assert "summary" in parsed
+        assert isinstance(parsed["field_diffs"], list)
+        assert isinstance(parsed["summary"], dict)
+
+        second_output = format_diff_json(diff)
+        assert output == second_output
+
+    def test_format_json_no_changes(self, temp_dir, sample_config):
+        export_path = temp_dir / "exported.json"
+        export_profile(str(sample_config), str(export_path))
+        diff = diff_profiles(str(sample_config), str(export_path))
+        output = format_diff_json(diff)
+
+        parsed = json.loads(output)
+        assert parsed["has_changes"] is False
+        assert parsed["has_conflicts"] is False
+        assert len(parsed["field_diffs"]) == 0
+
+
+class TestImportDryRun:
+    def test_dry_run_no_conflicts(self, temp_dir, sample_json_profile):
+        target_config = temp_dir / "backup-manifest.yaml"
+        result_path, backup_path, diff = import_profile(
+            str(sample_json_profile), str(target_config), force=False, dry_run=True
+        )
+
+        assert result_path is None
+        assert backup_path is None
+        assert diff is not None
+        assert not target_config.exists()
+
+    def test_dry_run_with_conflicts(self, temp_dir, sample_config, sample_json_profile):
+        original_content = sample_config.read_text(encoding="utf-8")
+
+        with pytest.raises(ProfileConflictError):
+            import_profile(
+                str(sample_json_profile), str(sample_config), force=False, dry_run=True
+            )
+
+        assert sample_config.read_text(encoding="utf-8") == original_content
+
+    def test_dry_run_force_with_conflicts(self, temp_dir, sample_config, sample_json_profile):
+        original_content = sample_config.read_text(encoding="utf-8")
+
+        result_path, backup_path, diff = import_profile(
+            str(sample_json_profile), str(sample_config), force=True, dry_run=True
+        )
+
+        assert result_path is None
+        assert backup_path is None
+        assert diff is not None
+        assert diff.has_conflicts
+        assert sample_config.read_text(encoding="utf-8") == original_content
+
+    def test_dry_run_permission_check(self, temp_dir, sample_json_profile):
+        import stat
+        read_only_dir = temp_dir / "readonly"
+        read_only_dir.mkdir()
+        read_only_dir.chmod(stat.S_IRUSR | stat.S_IXUSR)
+
+        target_config = read_only_dir / "backup-manifest.yaml"
+
+        original_access = os.access
+        try:
+            def mock_access(path, mode):
+                if path == str(read_only_dir) and mode == os.W_OK:
+                    return False
+                return original_access(path, mode)
+
+            with patch("os.access", side_effect=mock_access):
+                with pytest.raises(ProfilePermissionError):
+                    import_profile(
+                        str(sample_json_profile), str(target_config), force=False, dry_run=True
+                    )
+        finally:
+            os.chmod(str(read_only_dir), stat.S_IRWXU)
+
+    def test_dry_run_logs_operation(self, temp_dir, sample_config, sample_json_profile):
+        try:
+            import_profile(
+                str(sample_json_profile), str(sample_config), force=False, dry_run=True
+            )
+        except ProfileConflictError:
+            pass
+
+        logs = read_operation_logs(str(sample_config))
+        dry_run_logs = [l for l in logs if l.operation == "dry_run"]
+        assert len(dry_run_logs) >= 1
+
+    def test_dry_run_validates_config(self, temp_dir, sample_config):
+        bad_profile = temp_dir / "bad.json"
+        bad_profile.write_text(json.dumps({
+            "manifest": {
+                "source_dir": "",
+                "backup_dir": "bak",
+                "targets": [{"path": "data/"}],
+            }
+        }), encoding="utf-8")
+
+        with pytest.raises(ProfileInvalidConfigError):
+            import_profile(str(bad_profile), str(sample_config), force=True, dry_run=True)
+
+    def test_dry_run_detects_duplicate_targets(self, temp_dir, sample_config):
+        dup_profile = temp_dir / "dup.json"
+        dup_profile.write_text(json.dumps({
+            "manifest": {
+                "source_dir": "src",
+                "backup_dir": "bak",
+                "targets": [
+                    {"path": "data/"},
+                    {"path": "data/"},
+                ],
+            }
+        }), encoding="utf-8")
+
+        with pytest.raises(ProfileError) as exc:
+            import_profile(str(dup_profile), str(sample_config), force=True, dry_run=True)
+        assert exc.value.exit_code == EXIT_DUPLICATE_TARGET
+
+
+class TestImportConsistency:
+    def test_import_reload_consistent(self, temp_dir, sample_json_profile):
+        target_config = temp_dir / "backup-manifest.yaml"
+        result_path, backup_path, _ = import_profile(
+            str(sample_json_profile), str(target_config)
+        )
+
+        from backup_checker.config import load_config
+        loaded_config = load_config(result_path)
+
+        with open(str(sample_json_profile), "r", encoding="utf-8") as f:
+            imported_data = json.load(f)
+        manifest = imported_data["manifest"]
+
+        assert loaded_config.name == manifest.get("name")
+        assert loaded_config.hash_algorithm == manifest.get("hash_algorithm")
+        assert loaded_config.retention_days == manifest.get("retention_days")
+        assert loaded_config.exclude_patterns == manifest.get("exclude_patterns", [])
+
+        loaded_target_paths = [t.path for t in loaded_config.targets]
+        imported_target_paths = [t["path"] for t in manifest.get("targets", [])]
+        assert loaded_target_paths == imported_target_paths
+
+    def test_import_force_reload_consistent(self, temp_dir, sample_config, sample_json_profile):
+        result_path, backup_path, _ = import_profile(
+            str(sample_json_profile), str(sample_config), force=True
+        )
+
+        from backup_checker.config import load_config
+        loaded_config = load_config(result_path)
+
+        with open(str(sample_json_profile), "r", encoding="utf-8") as f:
+            imported_data = json.load(f)
+        manifest = imported_data["manifest"]
+
+        assert loaded_config.source_dir.endswith(manifest.get("source_dir")) or \
+               loaded_config.source_dir == manifest.get("source_dir") or \
+               manifest.get("source_dir") in loaded_config.source_dir
+
+        assert loaded_config.hash_algorithm == manifest.get("hash_algorithm")
+
+    def test_rollback_backup_contains_original(self, temp_dir, sample_config, sample_json_profile):
+        original_content = sample_config.read_text(encoding="utf-8")
+
+        result_path, backup_path, _ = import_profile(
+            str(sample_json_profile), str(sample_config), force=True
+        )
+
+        assert backup_path is not None
+        assert os.path.exists(backup_path)
+        assert Path(backup_path).read_text(encoding="utf-8") == original_content
+
+        from backup_checker.config import load_config
+        backup_config = load_config(backup_path)
+        assert backup_config.name == "test-backup"
+        assert backup_config.hash_algorithm == "sha256"
+
+
+class TestDiffJsonOutput:
+    def test_json_output_has_expected_keys(self, temp_dir, sample_config):
+        modified_json = temp_dir / "modified.json"
+        modified_data = {
+            "profile_version": "1.0",
+            "manifest": {
+                "name": "new-name",
+                "source_dir": "new_src",
+                "backup_dir": "new_backup",
+                "targets": [{"path": "data/"}],
+                "retention_days": 60,
+                "exclude_patterns": ["*.new"],
+                "hash_algorithm": "md5",
+            },
+        }
+        with open(modified_json, "w", encoding="utf-8") as f:
+            json.dump(modified_data, f, indent=2)
+
+        diff = diff_profiles(str(sample_config), str(modified_json))
+        output = format_diff_json(diff)
+        parsed = json.loads(output)
+
+        assert "current_config" in parsed
+        assert "incoming_file" in parsed
+        assert "has_changes" in parsed
+        assert "has_conflicts" in parsed
+        assert "field_diffs" in parsed
+        assert "summary" in parsed
+
+        for fd in parsed["field_diffs"]:
+            assert "field" in fd
+            assert "display_name" in fd
+            assert "change_type" in fd
+            assert "old_value" in fd
+            assert "new_value" in fd
+            assert "added" in fd
+            assert "removed" in fd
+
+        for key in ["added", "removed", "modified", "total"]:
+            assert key in parsed["summary"]
+
+    def test_json_output_targets_details(self, temp_dir, sample_config):
+        modified_json = temp_dir / "modified.json"
+        modified_data = {
+            "profile_version": "1.0",
+            "manifest": {
+                "name": "test-backup",
+                "source_dir": "source",
+                "backup_dir": "backup",
+                "targets": [
+                    {"path": "documents/", "description": "Important documents"},
+                    {"path": "videos/", "description": "Videos"},
+                ],
+                "retention_days": 30,
+                "exclude_patterns": ["*.tmp", "*.log"],
+                "hash_algorithm": "sha256",
+            },
+        }
+        with open(modified_json, "w", encoding="utf-8") as f:
+            json.dump(modified_data, f, indent=2)
+
+        diff = diff_profiles(str(sample_config), str(modified_json))
+        output = format_diff_json(diff)
+        parsed = json.loads(output)
+
+        targets_diff = next(fd for fd in parsed["field_diffs"] if fd["field"] == "targets")
+        assert len(targets_diff["added"]) == 1
+        assert targets_diff["added"][0]["path"] == "videos/"
+        assert len(targets_diff["removed"]) == 1
+        assert targets_diff["removed"][0]["path"] == "photos/"
+
+    def test_json_output_field_diff_has_correct_change_type(self, temp_dir, sample_config):
+        modified_json = temp_dir / "modified.json"
+        modified_data = {
+            "profile_version": "1.0",
+            "manifest": {
+                "name": "new-name",
+                "source_dir": "source",
+                "backup_dir": "backup",
+                "targets": [
+                    {"path": "documents/", "description": "Important documents"},
+                    {"path": "photos/", "description": "Personal photos"},
+                ],
+                "retention_days": 30,
+                "exclude_patterns": ["*.tmp", "*.log"],
+                "hash_algorithm": "sha256",
+            },
+        }
+        with open(modified_json, "w", encoding="utf-8") as f:
+            json.dump(modified_data, f, indent=2)
+
+        diff = diff_profiles(str(sample_config), str(modified_json))
+        output = format_diff_json(diff)
+        parsed = json.loads(output)
+
+        name_diff = next(fd for fd in parsed["field_diffs"] if fd["field"] == "name")
+        assert name_diff["change_type"] == "modify"
+        assert name_diff["old_value"] == "test-backup"
+        assert name_diff["new_value"] == "new-name"
+
+
+class TestOperationLogsDistinguish:
+    def test_diff_logged_separately(self, temp_dir, sample_config):
+        export_path = temp_dir / "exported.json"
+        export_profile(str(sample_config), str(export_path))
+
+        diff_profiles(str(sample_config), str(export_path))
+
+        logs = read_operation_logs(str(sample_config))
+        diff_logs = [l for l in logs if l.operation == "diff"]
+        assert len(diff_logs) >= 1
+        assert diff_logs[0].status in ["no_changes", "changes_found", "conflict"]
+
+    def test_dry_run_logged_separately(self, temp_dir, sample_config, sample_json_profile):
+        try:
+            import_profile(str(sample_json_profile), str(sample_config), force=False, dry_run=True)
+        except ProfileConflictError:
+            pass
+
+        logs = read_operation_logs(str(sample_config))
+        dry_run_logs = [l for l in logs if l.operation == "dry_run"]
+        assert len(dry_run_logs) >= 1
+
+    def test_import_logged_separately(self, temp_dir, sample_config, sample_json_profile):
+        import_profile(str(sample_json_profile), str(sample_config), force=True)
+
+        logs = read_operation_logs(str(sample_config))
+        overwrite_logs = [l for l in logs if l.operation == "overwrite"]
+        assert len(overwrite_logs) >= 1
+        assert overwrite_logs[0].status == "overwritten"
+        assert overwrite_logs[0].backup_path is not None
+
+    def test_rollback_logged_separately(self, temp_dir, sample_config):
+        bad_profile = temp_dir / "bad.json"
+        bad_profile.write_text(json.dumps({
+            "manifest": {
+                "source_dir": "",
+                "backup_dir": "bak",
+                "targets": [{"path": "data/"}],
+            }
+        }), encoding="utf-8")
+
+        try:
+            import_profile(str(bad_profile), str(sample_config), force=True)
+        except ProfileInvalidConfigError:
+            pass
+
+        logs = read_operation_logs(str(sample_config))
+        rollback_logs = [l for l in logs if l.operation == "rollback"]
+        assert len(rollback_logs) >= 1
+        assert rollback_logs[0].status == "rolled_back"
+        assert rollback_logs[0].backup_path is not None
+
+
+class TestImportPermissionDenied:
+    def test_import_permission_denied_no_backup_leak(self, temp_dir, sample_config, sample_json_profile):
+        import stat
+
+        original_content = sample_config.read_text(encoding="utf-8")
+
+        original_open = open
+
+        def mock_open(path, mode="r", *args, **kwargs):
+            if path == str(sample_config) and "w" in mode:
+                raise PermissionError("Permission denied")
+            return original_open(path, mode, *args, **kwargs)
+
+        with patch("builtins.open", side_effect=mock_open):
+            with pytest.raises(ProfilePermissionError):
+                import_profile(str(sample_json_profile), str(sample_config), force=True)
+
+        assert sample_config.read_text(encoding="utf-8") == original_content
+
+        log_dir = temp_dir / PROFILE_LOG_DIRNAME
+        if log_dir.exists():
+            log_file = log_dir / PROFILE_LOG_FILENAME
+            if log_file.exists():
+                logs = read_operation_logs(str(sample_config))
+                rollback_logs = [l for l in logs if l.operation == "rollback"]
+                assert len(rollback_logs) >= 1
 
 
 if __name__ == "__main__":
