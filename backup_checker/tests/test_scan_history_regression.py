@@ -5,6 +5,7 @@ This test verifies:
 2. The history file is actually written to disk
 3. The history file contains valid JSON with expected structure
 4. The fix does not break existing functionality (exit codes, file status detection)
+5. README examples stay in sync with actual CLI output (no Unicode symbol drift)
 
 Bug reference: scan output was showing "✓ved history to:" instead of
 "[OK] Saved history to:" due to a typo in cli.py line 142.
@@ -265,6 +266,63 @@ def test_exit_codes_still_work():
         cleanup_test_directory(temp_dir)
 
 
+def test_readme_examples_in_sync_with_actual_output():
+    """Test that README examples stay in sync with actual CLI output.
+
+    This prevents drift where README examples show Unicode symbols (✓, ✗)
+    but actual CLI output uses ASCII symbols ([OK], [MISS], etc.)
+    """
+    readme_path = project_root / "README.md"
+    assert readme_path.exists(), f"README not found at {readme_path}"
+
+    with open(readme_path, "r", encoding="utf-8") as f:
+        readme_content = f.read()
+
+    # 1. Verify no Unicode symbols in README examples
+    unicode_symbols = ["✓", "✗"]
+    for symbol in unicode_symbols:
+        assert symbol not in readme_content, (
+            f"README contains Unicode symbol '{symbol}' which should be replaced "
+            f"with ASCII version. This causes mismatch with actual CLI output."
+        )
+
+    # 2. Verify key messages use correct ASCII format
+    expected_messages = [
+        "[OK] Created config file:",
+        "[OK] Saved history to:",
+        "[OK] JSON report exported to:",
+        "[OK] CSV report exported to:",
+        "[OK] Text report exported to:",
+        "[MISS] Drill failed:",
+        "[CORR] Drill failed:",
+        "[MISS] MISSING",
+        "[CORR] CORRUPT",
+        "[EXP] EXPIRED",
+        "[UNREG] UNREGISTERED",
+        "[OK] OK",
+        "[OK] Success:",
+        "[ERR] Failed:",
+        "[OK] All files restored and verified successfully!",
+    ]
+
+    for expected in expected_messages:
+        assert expected in readme_content, (
+            f"README is missing expected message: '{expected}'. "
+            f"This indicates README examples are out of sync with actual CLI output."
+        )
+
+    # 3. Verify no truncated/buggy messages exist
+    buggy_messages = ["✓ved", "✓ Saved", "✗ Saved", "✓ Created", "✗ Created"]
+    for buggy in buggy_messages:
+        assert buggy not in readme_content, (
+            f"README contains buggy/truncated message: '{buggy}'. "
+            f"This should be fixed to use proper ASCII format."
+        )
+
+    print("PASS: test_readme_examples_in_sync_with_actual_output")
+    return True
+
+
 def main():
     """Run all regression tests."""
     print("=" * 70)
@@ -277,6 +335,7 @@ def main():
         test_history_file_is_written_and_valid,
         test_scan_with_no_save_does_not_write_history,
         test_exit_codes_still_work,
+        test_readme_examples_in_sync_with_actual_output,
     ]
 
     passed = 0

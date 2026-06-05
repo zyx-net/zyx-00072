@@ -144,24 +144,24 @@ backup-checker history [--config FILE] [--show REF] [--compare FIRST SECOND]
 examples/
 ├── source/                    # 源目录
 │   ├── documents/
-│   │   ├── report.txt         # ✓ 正常文件（备份一致）
-│   │   ├── notes.txt          # ✓ 正常文件（备份一致）
-│   │   ├── contract.txt       # ✗ 损坏文件（备份内容不同）
-│   │   └── missing-file.txt   # ✗ 缺失文件（备份不存在）
+│   │   ├── report.txt         # [OK] 正常文件（备份一致）
+│   │   ├── notes.txt          # [OK] 正常文件（备份一致）
+│   │   ├── contract.txt       # [CORR] 损坏文件（备份内容不同）
+│   │   └── missing-file.txt   # [MISS] 缺失文件（备份不存在）
 │   └── database/
-│       ├── backup.sql         # ✓ 正常文件
-│       └── config.json        # ✓ 正常文件
+│       ├── backup.sql         # [OK] 正常文件
+│       └── config.json        # [OK] 正常文件
 └── backup/                    # 备份目录
     ├── documents/
-    │   ├── report.txt         # ✓ 与源一致
-    │   ├── notes.txt          # ✓ 与源一致
-    │   ├── contract.txt       # ✗ 内容被篡改
-    │   └── old-project-2020.zip  # ! 过期文件（源不存在，超过保留期）
+    │   ├── report.txt         # [OK] 与源一致
+    │   ├── notes.txt          # [OK] 与源一致
+    │   ├── contract.txt       # [CORR] 内容被篡改
+    │   └── old-project-2020.zip  # [EXP] 过期文件（源不存在，超过保留期）
     ├── database/
-    │   ├── backup.sql         # ✓ 与源一致
-    │   └── config.json        # ✓ 与源一致
+    │   ├── backup.sql         # [OK] 与源一致
+    │   └── config.json        # [OK] 与源一致
     └── extra/
-        └── unregistered-file.txt  # ? 未登记文件（不在target范围内）
+        └── unregistered-file.txt  # [UNREG] 未登记文件（不在target范围内）
 ```
 
 ---
@@ -175,7 +175,7 @@ backup-checker init -o . -s source -b backup -n "example-backup"
 
 **输出：**
 ```
-✓ Created config file: .\backup-manifest.yaml
+[OK] Created config file: .\backup-manifest.yaml
 
 Edit the config file to customize targets and settings,
 then run 'backup-checker scan' to start verification.
@@ -234,37 +234,37 @@ Backup Files:   7
 ----------------------------------------------------------------------
 SUMMARY
 ----------------------------------------------------------------------
-  ✗ MISSING             1 files
-  ✗ CORRUPT             1 files
-  ! EXPIRED             1 files
-  ? UNREGISTERED        1 files
-  ✓ OK                  4 files
+  [MISS] MISSING             1 files
+  [CORR] CORRUPT             1 files
+  [EXP] EXPIRED             1 files
+  [UNREG] UNREGISTERED        1 files
+  [OK] OK                  4 files
 
-  ✗ Found 4 issue(s) requiring attention
+  [MISS] Found 4 issue(s) requiring attention
 
 ----------------------------------------------------------------------
-✗ MISSING (1 files)
+[MISS] MISSING (1 files)
 ----------------------------------------------------------------------
   documents/missing-file.txt
     Source: 44dabc628bda423f... (68 B, 2026-06-05 15:12:49)
     Backup: NOT FOUND
 
 ----------------------------------------------------------------------
-✗ CORRUPT (1 files)
+[CORR] CORRUPT (1 files)
 ----------------------------------------------------------------------
   documents/contract.txt
     Source: d31b5a79ca8c6b52... (65 B, 2026-06-05 15:36:27)
     Backup: 8de0d121a554ed11... (77 B, 2026-06-05 15:36:27)
 
 ----------------------------------------------------------------------
-! EXPIRED (1 files)
+[EXP] EXPIRED (1 files)
 ----------------------------------------------------------------------
   documents/old-project-2020.zip
     Backup: e9a47d915e0951c6... (79 B, 2026-02-25 15:36:27)
     Note:   File in backup but not in source, older than 30 days
 
 ----------------------------------------------------------------------
-? UNREGISTERED (1 files)
+[UNREG] UNREGISTERED (1 files)
 ----------------------------------------------------------------------
   extra/unregistered-file.txt
     Backup: 6fd3256b3c2d2af3... (60 B, 2026-06-05 15:12:49)
@@ -293,9 +293,9 @@ backup-checker report -f text -o report.txt
 
 **输出：**
 ```
-✓ JSON report exported to: report.json
-✓ CSV report exported to: report.csv
-✓ Text report exported to: report.txt
+[OK] JSON report exported to: report.json
+[OK] CSV report exported to: report.csv
+[OK] Text report exported to: report.txt
 ```
 
 **退出码：** `0`
@@ -310,7 +310,7 @@ backup-checker drill
 
 **输出：**
 ```
-✗ Drill failed: Drill aborted: 1 file(s) missing in backup: documents/missing-file.txt
+[MISS] Drill failed: Drill aborted: 1 file(s) missing in backup: documents/missing-file.txt
 ```
 
 **退出码：** `5`（缺失文件，演练失败）
@@ -329,7 +329,7 @@ backup-checker drill
 
 **输出：**
 ```
-✗ Drill failed: Drill aborted: 1 file(s) have checksum mismatch: documents/contract.txt
+[CORR] Drill failed: Drill aborted: 1 file(s) have checksum mismatch: documents/contract.txt
 ```
 
 **退出码：** `4`（校验和不一致，演练失败）
@@ -357,13 +357,13 @@ Scanning backup: D:\workSpace\AI__SPACE\zyx-00072\examples\backup
 BACKUP VERIFICATION REPORT
 ======================================================================
 ... (省略相同部分) ...
-  ✗ MISSING             0 files
-  ✗ CORRUPT             0 files
-  ! EXPIRED             1 files
-  ? UNREGISTERED        1 files
-  ✓ OK                  6 files
+  [MISS] MISSING             0 files
+  [CORR] CORRUPT             0 files
+  [EXP] EXPIRED             1 files
+  [UNREG] UNREGISTERED        1 files
+  [OK] OK                  6 files
 
-  ✗ Found 2 issue(s) requiring attention
+  [EXP] Found 2 issue(s) requiring attention
 ... (省略EXPIRED和UNREGISTERED详情) ...
 
 ======================================================================
@@ -375,11 +375,11 @@ Current Scan:  2026-06-05 15:38:21
 ----------------------------------------------------------------------
 SUMMARY COMPARISON
 ----------------------------------------------------------------------
-  ✗ MISSING             1 ->     0 (-1)
-  ✗ CORRUPT             1 ->     0 (-1)
-  ! EXPIRED             1 ->     1 (no change)
-  ? UNREGISTERED        1 ->     1 (no change)
-  ✓ OK                  4 ->     6 (+2)
+  [MISS] MISSING             1 ->     0 (-1)
+  [CORR] CORRUPT             1 ->     0 (-1)
+  [EXP] EXPIRED             1 ->     1 (no change)
+  [UNREG] UNREGISTERED        1 ->     1 (no change)
+  [OK] OK                  4 ->     6 (+2)
 
 ----------------------------------------------------------------------
 CHANGES (2)
@@ -390,7 +390,7 @@ CHANGES (2)
            missing -> ok
 
 ======================================================================
-✓ Saved history to: D:\workSpace\AI__SPACE\zyx-00072\examples\.backup-history\scan_20260605_153821.json
+[OK] Saved history to: D:\workSpace\AI__SPACE\zyx-00072\examples\.backup-history\scan_20260605_153821.json
 ```
 
 **退出码：** `0`（无缺失和损坏文件）
@@ -412,10 +412,10 @@ Started:    2026-06-05 15:38:22
 Completed:  2026-06-05 15:38:22
 Restore to: C:\Users\admin\AppData\Local\Temp\1\backup_drill_u2adazve
 
-  ✓ Success: 6 files
-  ✗ Failed:  0 files
+  [OK] Success: 6 files
+  [ERR] Failed:  0 files
 
-✓ All files restored and verified successfully!
+[OK] All files restored and verified successfully!
 ======================================================================
 (Temporary restore directory has been cleaned up)
 ```

@@ -7,7 +7,7 @@ Backup Dir:     D:\workSpace\AI__SPACE\zyx-00072\examples\backup
 Hash Algorithm: sha256
 Retention:      30 days
 
-Scanned At:     2026-06-05 17:04:59
+Scanned At:     2026-06-05 18:47:15
 Source Files:   6
 Backup Files:   7
 
@@ -33,14 +33,14 @@ SUMMARY
 [CORR] CORRUPT (1 files)
 ----------------------------------------------------------------------
   documents/contract.txt
-    Source: f4d697816a67a306... (60 B, 2026-06-05 17:04:57)
-    Backup: 658dbc4a46dd8a90... (72 B, 2026-06-05 17:04:57)
+    Source: f4d697816a67a306... (60 B, 2026-06-05 18:47:13)
+    Backup: 658dbc4a46dd8a90... (72 B, 2026-06-05 18:47:13)
 
 ----------------------------------------------------------------------
 [EXP] EXPIRED (1 files)
 ----------------------------------------------------------------------
   documents/old-project-2020.zip
-    Backup: e9a47d915e0951c6... (79 B, 2025-01-21 17:00:22)
+    Backup: e9a47d915e0951c6... (79 B, 2024-07-05 17:00:22)
     Note:   File in backup but not in source, older than 30 days
 
 ----------------------------------------------------------------------
