@@ -57,6 +57,12 @@ from .profile import (
     ProfileUnknownAlgorithmError,
     ProfileInvalidConfigError,
 )
+from .doctor import (
+    run_doctor,
+    DoctorError,
+    format_console_report,
+    format_json_report,
+)
 
 
 @click.group()
@@ -98,6 +104,51 @@ def init(output_dir, source_dir, backup_dir, name):
         sys.exit(EXIT_SUCCESS)
     except ConfigError as e:
         click.echo(f"[ERR] {e.message}", err=True)
+        sys.exit(e.exit_code)
+    except Exception as e:
+        click.echo(f"[ERR] Unexpected error: {e}", err=True)
+        sys.exit(EXIT_GENERAL_ERROR)
+
+
+@cli.command()
+@click.option(
+    "--config", "-c",
+    help="Path to the manifest config file (default: auto-detect)",
+)
+@click.option(
+    "--json",
+    is_flag=True,
+    help="Output results as stable JSON instead of console report",
+)
+@click.option(
+    "--fix",
+    is_flag=True,
+    help="Automatically create missing history and profile log directories",
+)
+def doctor(config, json, fix):
+    """Run diagnostics to verify configuration and environment before scanning.
+
+    Checks: source_dir, backup_dir, targets, exclude_patterns,
+    hash_algorithm, history directory, profile log directory.
+    Verifies existence, read/write permissions, duplicate paths,
+    and path traversal/overflow issues.
+    """
+    try:
+        config_path = config or find_config()
+        result = run_doctor(config_path, apply_fixes=fix)
+
+        if json:
+            click.echo(format_json_report(result))
+        else:
+            click.echo(format_console_report(result))
+
+        sys.exit(result.exit_code())
+
+    except DoctorError as e:
+        click.echo(f"[ERR] {e.message}", err=True)
+        sys.exit(e.exit_code)
+    except ConfigError as e:
+        click.echo(f"[ERR] Config error: {e.message}", err=True)
         sys.exit(e.exit_code)
     except Exception as e:
         click.echo(f"[ERR] Unexpected error: {e}", err=True)

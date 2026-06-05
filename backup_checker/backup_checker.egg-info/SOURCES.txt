@@ -5,6 +5,7 @@ backup_checker/cli.py
 backup_checker/comparator.py
 backup_checker/config.py
 backup_checker/constants.py
+backup_checker/doctor.py
 backup_checker/drill.py
 backup_checker/history.py
 backup_checker/profile.py
