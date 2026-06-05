@@ -1,0 +1,7 @@
+Metadata-Version: 2.4
+Name: backup-checker
+Version: 1.0.0
+Summary: Local backup inventory verification and recovery drill CLI tool
+Requires-Python: >=3.8
+Requires-Dist: click>=8.1.0
+Requires-Dist: pyyaml>=6.0

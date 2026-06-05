@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "backup-checker"
+version = "1.0.0"
+description = "Local backup inventory verification and recovery drill CLI tool"
+requires-python = ">=3.8"
+dependencies = [
+    "click>=8.1.0",
+    "pyyaml>=6.0",
+]
+
+[project.scripts]
+backup-checker = "backup_checker.cli:cli"
+
+[tool.setuptools.packages.find]
+include = ["backup_checker*"]

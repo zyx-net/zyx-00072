@@ -1,0 +1,1 @@
+﻿CORRUPTED content for important contract. This should fail verification.
