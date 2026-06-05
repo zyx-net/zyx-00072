@@ -7,6 +7,7 @@ backup_checker/config.py
 backup_checker/constants.py
 backup_checker/drill.py
 backup_checker/history.py
+backup_checker/profile.py
 backup_checker/reporter.py
 backup_checker/scanner.py
 backup_checker.egg-info/PKG-INFO
@@ -15,3 +16,7 @@ backup_checker.egg-info/dependency_links.txt
 backup_checker.egg-info/entry_points.txt
 backup_checker.egg-info/requires.txt
 backup_checker.egg-info/top_level.txt
+tests/test_e2e_full.py
+tests/test_profile_e2e.py
+tests/test_profile_unit.py
+tests/test_scan_history_regression.py

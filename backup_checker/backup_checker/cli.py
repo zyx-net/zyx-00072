@@ -17,6 +17,7 @@ from .constants import (
     EXIT_MISSING_FILE,
     FILE_STATUS_CORRUPT,
     FILE_STATUS_MISSING,
+    CONFIG_FILENAME,
 )
 from .config import (
     init_config,
@@ -45,6 +46,17 @@ from .reporter import (
     format_timestamp,
 )
 from .drill import run_drill, run_drill_from_history, DrillError
+from .profile import (
+    export_profile,
+    import_profile,
+    read_operation_logs,
+    ProfileError,
+    ProfileConflictError,
+    ProfileInvalidJsonError,
+    ProfilePermissionError,
+    ProfileUnknownAlgorithmError,
+    ProfileInvalidConfigError,
+)
 
 
 @click.group()
@@ -475,6 +487,131 @@ def history_cmd(config, show, compare):
         sys.exit(e.exit_code)
     except HistoryError as e:
         click.echo(f"[ERR] History error: {e.message}", err=True)
+        sys.exit(e.exit_code)
+    except Exception as e:
+        click.echo(f"[ERR] Unexpected error: {e}", err=True)
+        sys.exit(EXIT_GENERAL_ERROR)
+
+
+@cli.group()
+def profile():
+    """Manage backup configuration profiles (export/import)."""
+    pass
+
+
+@profile.command("export")
+@click.option(
+    "--config", "-c",
+    help="Path to the manifest config file (default: auto-detect)",
+)
+@click.option(
+    "--output", "-o",
+    default="backup-profile.json",
+    help="Output JSON file path (default: backup-profile.json)",
+)
+def profile_export(config, output):
+    """Export current configuration to a JSON profile file."""
+    try:
+        config_path = config or find_config()
+        result_path = export_profile(config_path, output)
+        click.echo(f"[OK] Profile exported to: {result_path}")
+        sys.exit(EXIT_SUCCESS)
+
+    except ProfileError as e:
+        click.echo(f"[ERR] {e.message}", err=True)
+        sys.exit(e.exit_code)
+    except ConfigError as e:
+        click.echo(f"[ERR] Config error: {e.message}", err=True)
+        sys.exit(e.exit_code)
+    except Exception as e:
+        click.echo(f"[ERR] Unexpected error: {e}", err=True)
+        sys.exit(EXIT_GENERAL_ERROR)
+
+
+@profile.command("import")
+@click.argument("json_file")
+@click.option(
+    "--config", "-c",
+    help=f"Target config file path (default: {CONFIG_FILENAME} in current dir)",
+)
+@click.option(
+    "--force", "-f",
+    is_flag=True,
+    help="Force overwrite if conflicts exist",
+)
+def profile_import(json_file, config, force):
+    """Import configuration from a JSON profile file.
+
+    JSON_FILE: Path to the JSON profile file to import.
+    """
+    try:
+        target_config_path = config or os.path.join(os.getcwd(), CONFIG_FILENAME)
+        result_path, backup_path = import_profile(json_file, target_config_path, force)
+
+        if backup_path:
+            click.echo(f"[OK] Rollback backup created at: {backup_path}")
+            click.echo(f"[OK] Profile imported and config overwritten: {result_path}")
+        else:
+            click.echo(f"[OK] Profile imported to: {result_path}")
+
+        sys.exit(EXIT_SUCCESS)
+
+    except ProfileConflictError as e:
+        click.echo(f"[ERR] {e.message}", err=True)
+        click.echo("", err=True)
+        click.echo("To proceed with overwrite, use --force flag:", err=True)
+        click.echo(f"  backup-checker profile import {json_file} --force", err=True)
+        sys.exit(e.exit_code)
+    except ProfileError as e:
+        click.echo(f"[ERR] {e.message}", err=True)
+        sys.exit(e.exit_code)
+    except Exception as e:
+        click.echo(f"[ERR] Unexpected error: {e}", err=True)
+        sys.exit(EXIT_GENERAL_ERROR)
+
+
+@profile.command("log")
+@click.option(
+    "--config", "-c",
+    help="Path to the manifest config file (default: auto-detect)",
+)
+@click.option(
+    "--limit", "-n",
+    type=int,
+    default=20,
+    help="Number of recent entries to show (default: 20)",
+)
+def profile_log(config, limit):
+    """Show profile operation history."""
+    try:
+        config_path = config or find_config()
+        logs = read_operation_logs(config_path)
+
+        if not logs:
+            click.echo("No profile operation history found.")
+            sys.exit(EXIT_SUCCESS)
+
+        recent_logs = logs[-limit:] if limit > 0 else logs
+
+        click.echo(f"Showing {len(recent_logs)} most recent profile operations:")
+        click.echo("")
+        click.echo(f"{'Timestamp':<25} {'Operation':<10} {'Status':<12} {'Details'}")
+        click.echo("-" * 90)
+
+        for log in recent_logs:
+            op = log.operation
+            status = log.status
+            click.echo(f"{log.timestamp:<25} {op:<10} {status:<12} {log.details}")
+            if log.backup_path:
+                click.echo(f"{'':<25} {'':<10} {'':<12}   backup: {log.backup_path}")
+
+        sys.exit(EXIT_SUCCESS)
+
+    except ProfileError as e:
+        click.echo(f"[ERR] {e.message}", err=True)
+        sys.exit(e.exit_code)
+    except ConfigError as e:
+        click.echo(f"[ERR] Config error: {e.message}", err=True)
         sys.exit(e.exit_code)
     except Exception as e:
         click.echo(f"[ERR] Unexpected error: {e}", err=True)
